@@ -1,34 +1,30 @@
-# ZMOBGPT — تستر هوشمند کانفیگ
+# ZMOBGPT
 
-ابزار دسکتاپ برای دریافت Subscription، استخراج کانفیگ‌ها و بررسی کیفیت آن‌ها.
+تستر حرفه‌ای کانفیگ‌های V2Ray/Xray برای ویندوز با رابط فارسی.
 
-## امکانات
-- دریافت چند لینک Subscription
-- استخراج VLESS، VMess، Trojan و SS
-- بررسی فعال بودن و Latency
-- تست Upload کانفیگ‌های فعال با Xray Core
-- نمایش زنده نتایج و بهترین کانفیگ
-- مرتب‌سازی نهایی و نمایش همه نتایج
-- رابط کاربری فارسی برای ویندوز
-
-## روش استفاده
-1. هر لینک Subscription را در یک خط وارد کنید.
-2. روی «دریافت و شروع تست» بزنید.
-3. برنامه ابتدا اتصال و Latency را بررسی می‌کند.
-4. کانفیگ‌های فعال وارد تست Upload می‌شوند.
-5. نتیجه هر تست همان لحظه در جدول و بهترین نتیجه در بالای برنامه نمایش داده می‌شود.
+## قابلیت‌ها
+- دریافت Subscription به‌صورت Plain/Base64 و چند لینک هم‌زمان
+- حذف Duplicate بر اساس هویت واقعی اتصال، نه نام کانفیگ
+- پیش‌فیلتر سریع برای حذف سرورهای مرده
+- تست واقعی با xray-core به‌جای TCP-only
+- پشتیبانی VMess، VLESS، Reality، XHTTP، gRPC، WebSocket، Trojan، Shadowsocks و Hysteria2
+- تست Median Ping و پایداری/Jitter در مرحله تست اصلی
+- Cache برای اجرای سریع‌تر تست‌های بعدی و تأیید مجدد کانفیگ‌های سالم
+- نوار پیشرفت، ETA، Start/Stop و گزارش زنده
+- تولید خودکار `CONFING.txt` شامل کانفیگ‌های سالم
 
 ## اجرا
-```bash
-python -m pip install -r requirements.txt
+```powershell
+pip install -r requirements.txt
 python app.py
 ```
-یا `RUN_ZMOBGPT.bat` را اجرا کنید.
 
-## فایل‌ها
-- `app.py` — برنامه اصلی
-- `requirements.txt` — وابستگی‌ها
-- `RUN_ZMOBGPT.bat` — اجرای سریع ویندوز
-- `xray.exe` — هسته Xray برای تست تونل
+فایل `xray.exe`، `geoip.dat`، `geosite.dat` و DLLهای همراه باید کنار برنامه باشند.
 
-> سرعت Upload به مقصد تست، کیفیت اینترنت، مسیر شبکه و شرایط لحظه‌ای سرور وابسته است.
+## ساخت EXE
+```powershell
+pip install pyinstaller
+python -m PyInstaller --onefile --windowed --name ZMOBGPT app.py
+```
+
+هسته تست از پروژه‌های متن‌باز تستر Xray ایده گرفته و در ZMOBGPT با رابط فارسی و تنظیمات مناسب این برنامه یکپارچه شده است.
