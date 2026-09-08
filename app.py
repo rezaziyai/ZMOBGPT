@@ -1,4 +1,4 @@
-﻿import base64, json, queue, socket, ssl, subprocess, threading, time, urllib.parse, urllib.request
+import base64, json, queue, socket, ssl, subprocess, threading, time, urllib.parse, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
@@ -90,40 +90,40 @@ def upload_test(c):
 
 class App(tk.Tk):
     def __init__(self):
-        super().__init__(); self.title('ZMOBGPT â€” Config Tester'); self.geometry('1180x720'); self.events=queue.Queue(); self.results=[]; self.stop=False; self.ui(); self.after(100,self.drain)
+        super().__init__(); self.title('ZMOBGPT �?" Config Tester'); self.geometry('1180x720'); self.events=queue.Queue(); self.results=[]; self.stop=False; self.ui(); self.after(100,self.drain)
     def ui(self):
-        top=ttk.Frame(self,padding=10); top.pack(fill='x'); ttk.Label(top,text='Ù„ÛŒÙ†Ú©â€ŒÙ‡Ø§ÛŒ Subscription (Ù‡Ø± Ø®Ø· ÛŒÚ© Ù„ÛŒÙ†Ú©):').pack(anchor='w')
+        top=ttk.Frame(self,padding=10); top.pack(fill='x'); ttk.Label(top,text='�"�O�?ک�?O�?ا�O Subscription (�?ر خط �Oک �"�O�?ک):').pack(anchor='w')
         self.urls=tk.Text(top,height=4); self.urls.pack(fill='x',pady=5); bar=ttk.Frame(top); bar.pack(fill='x')
-        self.start_btn=ttk.Button(bar,text='Ø¯Ø±ÛŒØ§ÙØª Ùˆ Ø´Ø±ÙˆØ¹ ØªØ³Øª',command=self.start); self.start_btn.pack(side='left'); ttk.Button(bar,text='ØªÙˆÙ‚Ù',command=self.cancel).pack(side='left',padx=6)
-        self.progress=ttk.Progressbar(bar,mode='determinate'); self.progress.pack(side='left',fill='x',expand=True,padx=10); self.summary=ttk.Label(bar,text='Ø¢Ù…Ø§Ø¯Ù‡'); self.summary.pack(side='right')
-        cols=('#','name','protocol','host','active','latency','upload','status'); self.tree=ttk.Treeview(self,columns=cols,show='headings'); heads={'#':'#','name':'Ù†Ø§Ù…','protocol':'Ù¾Ø±ÙˆØªÚ©Ù„','host':'Ø³Ø±ÙˆØ±','active':'ÙØ¹Ø§Ù„','latency':'Latency ms','upload':'Upload Mbps','status':'ÙˆØ¶Ø¹ÛŒØª'}
+        self.start_btn=ttk.Button(bar,text='در�Oافت �^ شر�^ع تست',command=self.start); self.start_btn.pack(side='left'); ttk.Button(bar,text='ت�^�,ف',command=self.cancel).pack(side='left',padx=6)
+        self.progress=ttk.Progressbar(bar,mode='determinate'); self.progress.pack(side='left',fill='x',expand=True,padx=10); self.summary=ttk.Label(bar,text='آ�.اد�?'); self.summary.pack(side='right')
+        cols=('#','name','protocol','host','active','latency','upload','status'); self.tree=ttk.Treeview(self,columns=cols,show='headings'); heads={'#':'#','name':'�?ا�.','protocol':'پر�^تک�"','host':'سر�^ر','active':'فعا�"','latency':'Latency ms','upload':'Upload Mbps','status':'�^ضع�Oت'}
         widths={'#':45,'name':230,'protocol':80,'host':210,'active':70,'latency':90,'upload':110,'status':260}
         for c in cols: self.tree.heading(c,text=heads[c]); self.tree.column(c,width=widths[c],anchor='center')
-        self.tree.pack(fill='both',expand=True,padx=10,pady=10); ttk.Label(self,text='ÙØ¹Ø§Ù„â€ŒÙ‡Ø§ Ø§Ø¨ØªØ¯Ø§ Ø¨Ø±Ø±Ø³ÛŒ Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯Ø› Ø³Ù¾Ø³ Upload ØªØ³Øª Ù…ÛŒâ€ŒØ´ÙˆØ¯ Ùˆ Ø¬Ø¯ÙˆÙ„ Ø¯Ø± Ù„Ø­Ø¸Ù‡ Ø¨Ø± Ø§Ø³Ø§Ø³ Ù†ØªÛŒØ¬Ù‡ Ø¨Ù‡â€ŒØ±ÙˆØ²Ø±Ø³Ø§Ù†ÛŒ Ù…ÛŒâ€ŒØ´ÙˆØ¯.',padding=10).pack(fill='x')
-    def cancel(self): self.stop=True; self.summary.config(text='Ø¯Ø± Ø­Ø§Ù„ ØªÙˆÙ‚Ù...')
+        self.tree.pack(fill='both',expand=True,padx=10,pady=10); ttk.Label(self,text='فعا�"�?O�?ا ابتدا بررس�O �.�O�?Oش�^�?د�> سپس Upload تست �.�O�?Oش�^د �^ جد�^�" در �"حظ�? بر اساس �?ت�Oج�? ب�?�?Oر�^زرسا�?�O �.�O�?Oش�^د.',padding=10).pack(fill='x')
+    def cancel(self): self.stop=True; self.summary.config(text='در حا�" ت�^�,ف...')
     def start(self):
         urls=[x.strip() for x in self.urls.get('1.0','end').splitlines() if x.strip()]
-        if not urls: return messagebox.showwarning('ZMOBGPT','Ø­Ø¯Ø§Ù‚Ù„ ÛŒÚ© Ù„ÛŒÙ†Ú© Subscription ÙˆØ§Ø±Ø¯ Ú©Ù†ÛŒØ¯.')
+        if not urls: return messagebox.showwarning('ZMOBGPT','حدا�,�" �Oک �"�O�?ک Subscription �^ارد ک�?�Oد.')
         self.start_btn.config(state='disabled'); self.stop=False; threading.Thread(target=self.worker,args=(urls,),daemon=True).start()
     def worker(self,urls):
         cfgs=[]
         for url in urls:
             try:
                 with urllib.request.urlopen(urllib.request.Request(url,headers={'User-Agent':'ZMOBGPT/1.0'}),timeout=15) as r: cfgs += parse_configs(r.read().decode('utf-8','ignore'))
-            except Exception as e: self.events.put(('summary',f'Ø®Ø·Ø§ Ø¯Ø± Ø¯Ø±ÛŒØ§ÙØª: {e}'))
+            except Exception as e: self.events.put(('summary',f'خطا در در�Oافت: {e}'))
         for i,c in enumerate(cfgs,1): c.index=i
-        self.results=[Result(c) for c in cfgs]; self.events.put(('reset',self.results)); self.events.put(('summary',f'{len(cfgs)} Ú©Ø§Ù†ÙÛŒÚ¯ Ø¯Ø±ÛŒØ§ÙØª Ø´Ø¯Ø› ØªØ³Øª ÙØ¹Ø§Ù„ Ø¨ÙˆØ¯Ù†...')); self.progress['maximum']=max(1,len(cfgs))
+        self.results=[Result(c) for c in cfgs]; self.events.put(('reset',self.results)); self.events.put(('summary',f'{len(cfgs)} کا�?ف�Oگ در�Oافت شد�> تست فعا�" ب�^د�?...')); self.progress['maximum']=max(1,len(cfgs))
         for i,r in enumerate(self.results,1):
             if self.stop: break
             r.active,r.latency,r.status=tcp_check(r.cfg); self.events.put(('row',r)); self.events.put(('progress',i))
-        active=[r for r in self.results if r.active]; self.events.put(('summary',f'{len(active)} ÙØ¹Ø§Ù„ Ø§Ø² {len(self.results)}Ø› Ø´Ø±ÙˆØ¹ ØªØ³Øª Upload...')); self.progress['maximum']=max(1,len(active))
+        active=[r for r in self.results if r.active]; self.events.put(('summary',f'{len(active)} فعا�" از {len(self.results)}�> شر�^ع تست Upload...')); self.progress['maximum']=max(1,len(active))
         for i,r in enumerate(active,1):
             if self.stop: break
-            r.upload,r.status=upload_test(r.cfg); self.events.put(('row',r)); self.events.put(('progress',i)); self.events.put(('summary',f'Ø¨Ù‡ØªØ±ÛŒÙ† ÙØ¹Ù„ÛŒ: {self.best()}'))
-        self.events.put(('summary',f'ØªÙ…Ø§Ù… Ø´Ø¯ â€” {len(active)} ÙØ¹Ø§Ù„ | {self.best()}')); self.events.put(('done',None))
+            r.upload,r.status=upload_test(r.cfg); self.events.put(('row',r)); self.events.put(('progress',i)); self.events.put(('summary',f'ب�?تر�O�? فع�"�O: {self.best()}'))
+        self.events.put(('summary',f'ت�.ا�. شد �?" {len(active)} فعا�" | {self.best()}')); self.events.put(('done',None))
     def best(self):
         a=[r for r in self.results if r.active and r.upload>0]
-        if not a: return 'Ù‡Ù†ÙˆØ² Ù†ØªÛŒØ¬Ù‡â€ŒØ§ÛŒ Ù†ÛŒØ³Øª'
+        if not a: return '�?�?�^ز �?ت�Oج�?�?Oا�O �?�Oست'
         b=max(a,key=lambda r:r.upload); return f'#{b.cfg.index} {b.upload:.2f} Mbps'
     def drain(self):
         try:
@@ -137,13 +137,13 @@ class App(tk.Tk):
                 elif typ=='done': self.start_btn.config(state='normal'); self.sort_best()
         except queue.Empty: pass
         self.after(100,self.drain)
-    def vals(self,r): return (r.cfg.index,r.cfg.name,r.cfg.scheme,r.cfg.host,'Ø¨Ù„Ù‡' if r.active else 'Ø®ÛŒØ±',f'{r.latency:.0f}',f'{r.upload:.2f}',r.status)
+    def vals(self,r): return (r.cfg.index,r.cfg.name,r.cfg.scheme,r.cfg.host,'ب�"�?' if r.active else 'خ�Oر',f'{r.latency:.0f}',f'{r.upload:.2f}',r.status)
     def insert(self,r): self.tree.insert('','end',iid=str(r.cfg.index),values=self.vals(r))
     def update_row(self,r):
         if not self.tree.exists(str(r.cfg.index)): self.insert(r)
         else: self.tree.item(str(r.cfg.index),values=self.vals(r))
     def sort_best(self):
-        for i in sorted(self.tree.get_children(),key=lambda x:(self.tree.set(x,'active')!='Ø¨Ù„Ù‡',-float(self.tree.set(x,'upload') or 0),float(self.tree.set(x,'latency') or 99999))): self.tree.move(i,'','end')
+        for i in sorted(self.tree.get_children(),key=lambda x:(self.tree.set(x,'active')!='ب�"�?',-float(self.tree.set(x,'upload') or 0),float(self.tree.set(x,'latency') or 99999))): self.tree.move(i,'','end')
 
 if __name__=='__main__': App().mainloop()
 
