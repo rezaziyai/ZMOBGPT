@@ -1,5 +1,5 @@
 import base64, json, queue, socket, threading, time, urllib.parse, urllib.request
-import os, subprocess, tempfile, shutil
+import os, subprocess, tempfile, shutil, base64, json, socket, threading, time, urllib.parse, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
@@ -23,7 +23,7 @@ def decode_sub(text):
 
 def parse_configs(text):
     out=[]
-    for i,line in enumerate(decode_sub(text).replace('\\r','').split('\\n'),1):
+    for i,line in enumerate(decode_sub(text).replace('\r','').splitlines(),1):
         line=line.strip()
         if not line.startswith(('vless://','vmess://','trojan://','ss://')): continue
         try:
@@ -127,6 +127,33 @@ def tcp_check(c,timeout=4):
         return True,(time.perf_counter()-t)*1000,'TCP OK'
     except Exception as e: return False,0,str(e)[:60]
 
+def real_latency(c,index):
+    if not XRAY.exists(): return False,0,'Xray Ù¾ÛŒØ¯Ø§ Ù†Ø´Ø¯'
+    port=18500+(index%500); cfg=APP_DIR/f'.xray_ping_{index}.json'; proc=None
+    try:
+        cfg.write_text(json.dumps(xray_config(c,port),ensure_ascii=False),encoding='utf-8')
+        proc=subprocess.Popen([str(XRAY),'run','-c',str(cfg)],cwd=str(APP_DIR),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        if not wait_port(port,8): return False,0,'Xray/proxy start failed'
+        vals=[]
+        for _ in range(3):
+            t=time.perf_counter()
+            r=subprocess.run(['curl.exe','--socks5-hostname',f'127.0.0.1:{port}','--connect-timeout','5','--max-time','8','-sS','-o','NUL','-w','%{http_code} %{time_connect} %{time_appconnect} %{time_starttransfer}','https://www.cloudflare.com/cdn-cgi/trace'],capture_output=True,text=True,timeout=10)
+            parts=r.stdout.strip().split()
+            if parts and parts[0].startswith('2'):
+                vals.append((time.perf_counter()-t)*1000)
+        if vals:
+            vals.sort(); return True,vals[len(vals)//2],'REAL PROXY'
+        return False,0,'Proxy request failed'
+    except Exception as e: return False,0,str(e)[:45]
+    finally:
+        if proc:
+            try: proc.terminate(); proc.wait(timeout=2)
+            except Exception:
+                try: proc.kill()
+                except Exception: pass
+        try: cfg.unlink(missing_ok=True)
+        except Exception: pass
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__();self.title(T['title']);self.geometry('1180x720');self.events=queue.Queue();self.results=[];self.stop=False;self.ui();self.after(100,self.drain)
@@ -154,7 +181,7 @@ class App(tk.Tk):
         self.results=[Result(c) for c in cfgs];self.events.put(('reset',self.results));self.progress['maximum']=max(1,len(cfgs))
         for i,r in enumerate(self.results,1):
             if self.stop:break
-            r.active,r.latency,r.status=tcp_check(r.cfg);self.events.put(('row',r));self.events.put(('progress',i))
+            r.active,r.latency,r.status=real_latency(r.cfg,r.cfg.index);self.events.put(('row',r));self.events.put(('progress',i))
         active=[r for r in self.results if r.active]
         for i,r in enumerate(active,1):
             if self.stop:break
