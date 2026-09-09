@@ -1,214 +1,354 @@
 # -*- coding: utf-8 -*-
-import sys
-import time
-import queue
-import threading
-import traceback
-from datetime import datetime
+import os, sys, time, base64, json, queue, socket, tempfile, subprocess, threading
+from dataclasses import dataclass
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlsplit, parse_qs, unquote
 import tkinter as tk
-from tkinter import scrolledtext, ttk, messagebox
+from tkinter import ttk, scrolledtext, messagebox
 
 APP_DIR = Path(__file__).resolve().parent
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
+sys.path.insert(0, str(APP_DIR))
 import xray_config_tester_v5 as core
-
 core.XRAY_PATH = str(APP_DIR / "xray.exe")
 core.MAX_DELAY_MS = 1200
 core.PING_COUNT = 3
 core.JITTER_FACTOR = 2.0
-core.REQUEST_TIMEOUT = 6
-core.MAX_WORKERS = 12
-core.PREFILTER_WORKERS = 80
+core.REQUEST_TIMEOUT = 8
+core.MAX_WORKERS = 8
+core.PREFILTER_WORKERS = 50
 core.REMARK_TAG = "ZMOBGPT"
 
-msg_queue = queue.Queue()
-STOP = threading.Event()
+DOWNLOAD_URL = "https://speed.cloudflare.com/__down?bytes=5000000"
+UPLOAD_BYTES = 5_000_000
+UPLOAD_URL = "https://speed.cloudflare.com/__up"
+
+@dataclass
+class Row:
+    index: int
+    raw: str
+    name: str
+    protocol: str
+    host: str
+    port: int
+    active: bool = False
+    latency: float = 0.0
+    jitter: float = 0.0
+    download: float = 0.0
+    upload: float = 0.0
+    status: str = ""
 
 
-def hms():
-    return datetime.now().strftime("%H:%M:%S")
-
-
-def duration(seconds):
-    s = int(seconds)
-    if s < 60:
-        return f"{s} ثانیه"
-    return f"{s//60} دقیقه و {s%60} ثانیه"
-
-
-def log(text):
-    msg_queue.put(("log", str(text)))
-
-
-def progress(info, phase):
-    done = info.get("done", 0)
-    total = info.get("total", 0)
-    pct = (done / total * 100) if total else 0
-    eta = info.get("eta_sec", 0)
-    eta_text = f"{eta/60:.0f} دقیقه" if eta >= 60 else f"{eta:.0f} ثانیه"
-    msg_queue.put(("progress", f"{phase}: {done:,}/{total:,}  ({pct:.0f}٪)  | سالم: {info.get('good', 0)} | حدود {eta_text}"))
-
-
-def run_pipeline(urls):
-    old = sys.stdout
+def display_name(link, idx):
     try:
-        sys.stdout = type("W", (), {"write": lambda self, x: log(x) if x else None, "flush": lambda self: None})()
-        STOP.clear()
-        core.STOP_EVENT.clear()
-        started = time.time()
-        log("=" * 64)
-        log(f"شروع تست: {hms()}")
-        log("نسخه ارتقایافته با موتور xray-core و تست واقعی")
-        log("=" * 64)
-        core.check_xray_binary()
-        cache = core.load_cache()
-        if core._hours_since(cache.get("created", "")) >= core.RESET_EVERY_HOURS:
-            log("چرخه cache تمام شده؛ حافظه از نو ساخته شد.")
-            cache = core._fresh_cache()
-
-        log("[1/5] دریافت Subscription ها...")
-        configs, reports = core.fetch_with_report(urls, cache)
-        if not configs:
-            log("هیچ کانفیگی دریافت نشد.")
-            return
-        log(f"دریافت اولیه: {len(configs):,} کانفیگ")
-
-        configs = core.dedup_configs(configs)
-        log(f"[2/5] بعد از حذف Duplicate واقعی: {len(configs):,}")
-
-        to_test, skipped, sig_map = core.classify_by_cache(configs, cache)
-        log(f"[3/5] تست جدید/نیازمند تأیید: {len(to_test):,} | از cache رد شد: {len(skipped):,}")
-
-        candidates = to_test
-        dead = []
-        if core.PREFILTER and candidates:
-            log("[4/5] پیش‌فیلتر سریع TCP برای حذف سرورهای مرده...")
-            candidates = core.prefilter(candidates, progress=lambda x: progress(x, "پیش‌فیلتر"))
-            dead = list(set(to_test) - set(candidates))
-            log(f"پیش‌فیلتر: {len(candidates):,} نامزد باقی ماند.")
-
-        if STOP.is_set():
-            return
-        if candidates:
-            log("[5/5] تست واقعی با Xray: handshake + درخواست HTTP + کنترل پایداری")
-            good, bad = core.test_all(candidates, progress=lambda x: progress(x, "تست واقعی"))
-        else:
-            good, bad = [], []
-
-        now = core._now_iso()
-        for link, delay, _ in good:
-            sig = sig_map.get(link) or core.config_signature(link)
-            cache["configs"][sig] = {"result": "good", "ping": round(delay), "last_tested": now, "link": link}
-        for link, _, _ in bad:
-            sig = sig_map.get(link) or core.config_signature(link)
-            cache["configs"][sig] = {"result": "bad", "last_tested": now}
-        if not STOP.is_set():
-            for link in dead:
-                sig = sig_map.get(link) or core.config_signature(link)
-                cache["configs"][sig] = {"result": "bad", "last_tested": now}
-        core.save_cache(cache)
-        core.write_confing_from_cache(cache, core.REMARK_TAG)
-
-        elapsed = duration(time.time() - started)
-        log(f"پایان تست واقعی: {len(good):,} سالم | {len(bad):,} خراب | زمان: {elapsed}")
-        log(f"CONFING.txt به‌روز شد؛ cache نیز ذخیره شد.")
+        u = urlsplit(link)
+        frag = unquote(u.fragment or "").strip()
+        q = parse_qs(u.query)
+        return unquote(q.get("remarks", [""])[0]).strip() or frag or f"Config {idx}"
     except Exception:
-        log("خطا در اجرای تست:\n" + traceback.format_exc())
+        return f"Config {idx}"
+
+
+def make_row(link, idx):
+    u = urlsplit(link)
+    return Row(idx, link, display_name(link, idx), u.scheme.lower(), u.hostname or "", u.port or 0)
+
+
+def start_xray(row, local_port):
+    outbound = core.parse_config(row.raw)
+    if not outbound:
+        raise ValueError("Parse failed")
+    cfg = core.make_xray_config(outbound, local_port)
+    fd, path = tempfile.mkstemp(prefix="zmob_", suffix=".json", dir=APP_DIR)
+    os.close(fd)
+    Path(path).write_text(json.dumps(cfg), encoding="utf-8")
+    proc = subprocess.Popen([core.XRAY_PATH, "run", "-c", path], cwd=APP_DIR,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if not core.wait_for_port(local_port, 8):
+        try: proc.kill()
+        except Exception: pass
+        try: os.unlink(path)
+        except Exception: pass
+        raise RuntimeError("Xray start failed")
+    return proc, path
+
+
+def stop_xray(proc, path):
+    try:
+        if proc and proc.poll() is None:
+            proc.terminate(); proc.wait(timeout=2)
+    except Exception:
+        try: proc.kill()
+        except Exception: pass
+    try: os.unlink(path)
+    except Exception: pass
+
+def latency_real(row):
+    port = 25000 + (row.index % 400)
+    proc = path = None
+    try:
+        proc, path = start_xray(row, port)
+        vals = []
+        proxy = f"socks5h://127.0.0.1:{port}"
+        for _ in range(4):
+            t = time.perf_counter()
+            r = subprocess.run([
+                "curl.exe", "--proxy", proxy, "--connect-timeout", "5",
+                "--max-time", "10", "-sS", "-o", "NUL", "-w",
+                "%{http_code} %{time_total}", "https://www.cloudflare.com/cdn-cgi/trace"
+            ], capture_output=True, text=True, timeout=12)
+            p = r.stdout.strip().split()
+            if len(p) >= 2 and p[0].startswith("2"):
+                vals.append(float(p[1]) * 1000.0)
+            elif r.returncode == 0:
+                vals.append((time.perf_counter() - t) * 1000.0)
+        if not vals:
+            return False, 0.0, 0.0, "Proxy FAIL"
+        vals.sort()
+        med = vals[len(vals)//2]
+        return True, med, max(vals) - min(vals), "REAL PROXY"
+    except Exception as e:
+        return False, 0.0, 0.0, str(e)[:32]
     finally:
-        sys.stdout = old
-        msg_queue.put(("done", None))
+        stop_xray(proc, path)
 
 
+def transfer_test(row, direction):
+    port = 26000 + (row.index % 400)
+    proc = path = tmp = None
+    try:
+        proc, path = start_xray(row, port)
+        proxy = f"socks5h://127.0.0.1:{port}"
+        if direction == "download":
+            cmd = ["curl.exe", "--proxy", proxy, "--connect-timeout", "6",
+                   "--max-time", "25", "-sS", "-o", "NUL", "-w",
+                   "%{http_code} %{speed_download} %{time_total}", DOWNLOAD_URL]
+        else:
+            fd, tmp = tempfile.mkstemp(prefix="zmob_up_", suffix=".bin", dir=APP_DIR)
+            os.close(fd)
+            with open(tmp, "wb") as f:
+                f.write(os.urandom(UPLOAD_BYTES))
+            cmd = ["curl.exe", "--proxy", proxy, "--connect-timeout", "6",
+                   "--max-time", "25", "-sS", "-o", "NUL", "-X", "POST",
+                   "--data-binary", f"@{tmp}", "-w",
+                   "%{http_code} %{speed_upload} %{time_total}", UPLOAD_URL]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        p = r.stdout.strip().split()
+        if len(p) < 2 or not p[0].startswith("2"):
+            return 0.0, f"{direction.upper()} FAIL ({p[0] if p else '000'})"
+        bps = float(p[1])
+        return bps * 8.0 / 1_000_000.0, f"{direction.upper()} {p[0]}"
+    except Exception as e:
+        return 0.0, f"{direction.upper()} {str(e)[:24]}"
+    finally:
+        stop_xray(proc, path)
+        if tmp:
+            try: os.unlink(tmp)
+            except Exception: pass
+
+
+def parse_jitter(reason):
+    try:
+        if "j" in reason:
+            return float(reason.split("j", 1)[1].rstrip(")"))
+    except Exception:
+        pass
+    return 0.0
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("ZMOBGPT — تستر حرفه‌ای V2Ray/Xray")
-        self.geometry("1250x760")
+        self.geometry("1400x820")
         self.events = queue.Queue()
-        self.running = False
-        self.build()
+        self.stop_event = threading.Event()
+        self.rows = []
+        self.build_ui()
         self.after(100, self.drain)
 
-    def build(self):
-        top = ttk.Frame(self, padding=10)
-        top.pack(fill="x")
-        ttk.Label(top, text="لینک‌های Subscription — هر خط یک لینک", font=("Tahoma", 11, "bold")).pack(anchor="w")
-        self.urls = tk.Text(top, height=5, font=("Tahoma", 10))
+    def build_ui(self):
+        top = ttk.Frame(self, padding=10); top.pack(fill="x")
+        ttk.Label(top, text="لینک‌های Subscription — هر خط یک لینک",
+                  font=("Tahoma", 11, "bold")).pack(anchor="w")
+        self.urls = tk.Text(top, height=4, font=("Tahoma", 10))
         self.urls.pack(fill="x", pady=6)
-
-        bar = ttk.Frame(top)
-        bar.pack(fill="x")
-        self.start_btn = ttk.Button(bar, text="▶ شروع تست", command=self.start)
+        bar = ttk.Frame(top); bar.pack(fill="x")
+        self.start_btn = ttk.Button(bar, text="▶ شروع تست کامل", command=self.start)
         self.start_btn.pack(side="left")
         self.stop_btn = ttk.Button(bar, text="■ توقف", command=self.stop, state="disabled")
-        self.stop_btn.pack(side="left", padx=6)
+        self.stop_btn.pack(side="left", padx=7)
         self.progress = ttk.Progressbar(bar, mode="determinate")
         self.progress.pack(side="left", fill="x", expand=True, padx=10)
         self.status = ttk.Label(bar, text="آماده")
         self.status.pack(side="right")
+        self.logbox = scrolledtext.ScrolledText(self, height=7, font=("Consolas", 9))
+        self.logbox.pack(fill="x", padx=10, pady=(3, 7))
 
-        self.details = scrolledtext.ScrolledText(self, height=9, font=("Consolas", 9), wrap="word")
-        self.details.pack(fill="x", padx=10, pady=(4, 0))
+        cols = ("#", "name", "protocol", "server", "active", "latency",
+                "jitter", "download", "upload", "status")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings")
+        headers = {
+            "#":"#", "name":"نام", "protocol":"پروتکل", "server":"سرور",
+            "active":"فعال", "latency":"Latency ms", "jitter":"Jitter ms",
+            "download":"Download Mbps", "upload":"Upload Mbps", "status":"وضعیت"
+        }
+        widths = {"#":45,"name":260,"protocol":90,"server":220,"active":65,
+                  "latency":90,"jitter":85,"download":120,"upload":110,"status":240}
+        for c in cols:
+            self.tree.heading(c, text=headers[c])
+            self.tree.column(c, width=widths[c], anchor="center")
+        self.tree.pack(fill="both", expand=True, padx=10, pady=5)
 
-        cols = ("phase", "done", "total", "good", "time")
-        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=9)
-        for c, h, w in [("phase", "مرحله", 260), ("done", "انجام‌شده", 110), ("total", "کل", 110), ("good", "سالم", 110), ("time", "وضعیت", 450)]:
-            self.tree.heading(c, text=h)
-            self.tree.column(c, width=w, anchor="center")
-        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+        self.topbox = scrolledtext.ScrolledText(self, height=8, font=("Consolas", 10))
+        self.topbox.pack(fill="x", padx=10, pady=(5, 3))
+        ttk.Label(self, text="پس از تست واقعی، ۱۰ کانفیگ برتر Upload در کادر پایین و TOP10_UPLOAD.txt ذخیره می‌شوند.",
+                  padding=8).pack(fill="x")
 
-        ttk.Label(self, text="ویژگی‌های اضافه‌شده: حذف Duplicate واقعی، cache، پیش‌فیلتر سریع، تست واقعی با xray-core، کنترل Median/Jitter و خروجی CONFING.txt", padding=8).pack(fill="x")
+    def log(self, text):
+        self.events.put(("log", str(text)))
 
     def start(self):
         urls = [x.strip() for x in self.urls.get("1.0", "end").splitlines() if x.strip()]
         if not urls:
             messagebox.showwarning("ZMOBGPT", "حداقل یک لینک Subscription وارد کنید.")
             return
-        if self.running:
-            return
-        self.running = True
-        STOP.clear()
-        core.STOP_EVENT.clear()
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
-        self.status.config(text="در حال اجرا...")
-        self.details.delete("1.0", "end")
+        self.status.config(text="در حال تست...")
+        self.progress["value"] = 0
+        self.logbox.delete("1.0", "end")
+        self.topbox.delete("1.0", "end")
         self.tree.delete(*self.tree.get_children())
-        threading.Thread(target=run_pipeline, args=(urls,), daemon=True).start()
+        self.stop_event.clear()
+        threading.Thread(target=self.worker, args=(urls,), daemon=True).start()
 
     def stop(self):
-        STOP.set()
+        self.stop_event.set()
         core.STOP_EVENT.set()
         self.status.config(text="در حال توقف...")
 
-    def add_progress(self, text):
-        parts = text.split("|")
-        vals = [p.strip() for p in parts]
-        phase = vals[0] if vals else ""
-        self.details.insert("end", text + "\n")
-        self.details.see("end")
-        self.status.config(text=phase[:90])
+    def add_row(self, row):
+        vals = (row.index, row.name, row.protocol, row.host,
+                "بله" if row.active else "خیر",
+                f"{row.latency:.0f}" if row.latency else "-",
+                f"{row.jitter:.0f}" if row.jitter else "-",
+                f"{row.download:.2f}" if row.download else "-",
+                f"{row.upload:.2f}" if row.upload else "-",
+                row.status)
+        iid = str(row.index)
+        if self.tree.exists(iid): self.tree.item(iid, values=vals)
+        else: self.tree.insert("", "end", iid=iid, values=vals)
+
+    def worker(self, urls):
+        old_stdout = sys.stdout
+        try:
+            sys.stdout = type("Logger", (), {
+                "write": lambda s, x: self.log(x) if x else None,
+                "flush": lambda s: None
+            })()
+            core.STOP_EVENT.clear()
+            self.log("=" * 72)
+            self.log("شروع تست کامل: Latency واقعی + Jitter + Download + Upload")
+            self.log("=" * 72)
+
+            configs = []
+            for url in urls:
+                if self.stop_event.is_set(): return
+                try:
+                    req = core.requests.get(url, timeout=20,
+                                            headers={"User-Agent":"ZMOBGPT/2.0"})
+                    text = req.text
+                    configs.extend(core._extract_links_from_text(text))
+                    self.log(f"Subscription دریافت شد: {len(configs):,} کانفیگ")
+                except Exception as e:
+                    self.log(f"خطا در دریافت Subscription: {e}")
+            # fallback to core fetcher when helper is unavailable
+            if not configs:
+                cache = core._fresh_cache()
+                configs, _ = core.fetch_with_report(urls, cache)
+            configs = core.dedup_configs(configs)
+            self.rows = [make_row(c, i) for i, c in enumerate(configs, 1)]
+            self.events.put(("reset", self.rows))
+            self.progress["maximum"] = max(1, len(self.rows))
+            self.log(f"تعداد نهایی برای تست: {len(self.rows):,}")
+
+            # Stage 1: real proxy latency, not TCP ping
+            def latency_job(r):
+                return latency_real(r)
+            with ThreadPoolExecutor(max_workers=core.MAX_WORKERS) as ex:
+                futs = {ex.submit(latency_job, r): r for r in self.rows}
+                done = 0
+                for fut in as_completed(futs):
+                    if self.stop_event.is_set(): break
+                    r = futs[fut]
+                    r.active, r.latency, r.jitter, st = fut.result()
+                    r.status = st
+                    done += 1
+                    self.events.put(("row", r)); self.events.put(("progress", done))
+            active = [r for r in self.rows if r.active]
+            self.log(f"Latency واقعی تمام شد: {len(active)}/{len(self.rows)} سالم")
+
+            # Stage 2: actual bandwidth through the same config
+            for direction in ("download", "upload"):
+                self.log(f"شروع تست واقعی {direction.upper()} برای {len(active)} سرور فعال...")
+                with ThreadPoolExecutor(max_workers=core.MAX_WORKERS) as ex:
+                    futs = {ex.submit(transfer_test, r, direction): r for r in active}
+                    done = 0
+                    for fut in as_completed(futs):
+                        if self.stop_event.is_set(): break
+                        r = futs[fut]
+                        speed, st = fut.result()
+                        if direction == "download": r.download = speed
+                        else: r.upload = speed
+                        r.status = st
+                        done += 1
+                        self.events.put(("row", r))
+                        self.events.put(("summary", f"{direction.upper()}: {done}/{len(active)}"))
+                if self.stop_event.is_set(): break
+
+            tops = sorted([r for r in active if r.upload > 0],
+                          key=lambda r: r.upload, reverse=True)[:10]
+            top_lines = ["🏆 TOP 10 — بهترین Upload واقعی", ""]
+            for n, r in enumerate(tops, 1):
+                top_lines.append(f"{n:2}. {r.upload:7.2f} Mbps | {r.host}:{r.port} | {r.name}")
+            Path(APP_DIR / "TOP10_UPLOAD.txt").write_text("\n".join(top_lines), encoding="utf-8")
+            self.events.put(("top", "\n".join(top_lines)))
+            self.log("TOP10_UPLOAD.txt ساخته شد.")
+            self.log("تست کامل به پایان رسید.")
+        except Exception:
+            self.log("خطا:\n" + __import__("traceback").format_exc())
+        finally:
+            sys.stdout = old_stdout
+            self.events.put(("done", None))
 
     def drain(self):
         try:
             while True:
-                typ, data = msg_queue.get_nowait()
+                typ, data = self.events.get_nowait()
                 if typ == "log":
-                    self.details.insert("end", data)
-                    self.details.see("end")
+                    self.logbox.insert("end", data)
+                    self.logbox.see("end")
+                elif typ == "reset":
+                    for r in data: self.add_row(r)
+                elif typ == "row":
+                    self.add_row(data)
                 elif typ == "progress":
-                    self.add_progress(data)
+                    self.progress["value"] = data
+                elif typ == "summary":
+                    self.status.config(text=data)
+                elif typ == "top":
+                    self.topbox.delete("1.0", "end")
+                    self.topbox.insert("end", data)
                 elif typ == "done":
-                    self.running = False
                     self.start_btn.config(state="normal")
                     self.stop_btn.config(state="disabled")
-                    self.status.config(text="متوقف شد" if STOP.is_set() else "پایان ✔")
+                    if self.stop_event.is_set():
+                        self.status.config(text="تست متوقف شد")
+                    else:
+                        self.status.config(text="پایان ✓")
         except queue.Empty:
             pass
-        self.after(120, self.drain)
-
+        self.after(100, self.drain)
 
 if __name__ == "__main__":
     App().mainloop()
