@@ -6,6 +6,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlsplit, parse_qs, unquote
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
+try:
+    import qrcode
+    from PIL import ImageTk
+except Exception:
+    qrcode = None
+    ImageTk = None
 
 APP_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP_DIR))
@@ -163,6 +169,10 @@ class App(tk.Tk):
         self.events = queue.Queue()
         self.stop_event = threading.Event()
         self.rows = []
+        self.top_rows = []
+        self.do_download = tk.BooleanVar(value=False)
+        self.do_upload = tk.BooleanVar(value=False)
+        self.qr_image = None
         self.build_ui()
         self.after(100, self.drain)
 
@@ -177,6 +187,8 @@ class App(tk.Tk):
         self.start_btn.pack(side="left")
         self.stop_btn = ttk.Button(bar, text="■ توقف", command=self.stop, state="disabled")
         self.stop_btn.pack(side="left", padx=7)
+        ttk.Checkbutton(bar, text="تست Download", variable=self.do_download).pack(side="left", padx=6)
+        ttk.Checkbutton(bar, text="تست Upload", variable=self.do_upload).pack(side="left", padx=6)
         self.progress = ttk.Progressbar(bar, mode="determinate")
         self.progress.pack(side="left", fill="x", expand=True, padx=10)
         self.status = ttk.Label(bar, text="آماده")
@@ -198,10 +210,26 @@ class App(tk.Tk):
             self.tree.heading(c, text=headers[c])
             self.tree.column(c, width=widths[c], anchor="center")
         self.tree.pack(fill="both", expand=True, padx=10, pady=5)
+        self.tree.bind("<<TreeviewSelect>>", self.tree_selected)
 
-        self.topbox = scrolledtext.ScrolledText(self, height=8, font=("Consolas", 10))
-        self.topbox.pack(fill="x", padx=10, pady=(5, 3))
-        ttk.Label(self, text="پس از تست واقعی، ۱۰ کانفیگ برتر Upload در کادر پایین و TOP10_UPLOAD.txt ذخیره می‌شوند.",
+        ttk.Label(self, text="🏆 TOP 10 Upload", font=("Tahoma", 11, "bold")).pack(anchor="e", padx=10, pady=(7, 2))
+        self.topbox = tk.Text(self, height=8, font=("Tahoma", 10), cursor="hand2")
+        self.topbox.pack(fill="x", padx=10, pady=(2, 3))
+        self.topbox.bind("<Button-1>", self.top_click)
+
+        detail = ttk.Frame(self)
+        detail.pack(fill="both", expand=True, padx=10, pady=(4, 6))
+        left = ttk.Frame(detail)
+        left.pack(side="left", fill="both", expand=True)
+        ttk.Label(left, text="کانفیگ انتخاب‌شده", font=("Tahoma", 10, "bold")).pack(anchor="w")
+        self.config_box = scrolledtext.ScrolledText(left, height=7, font=("Consolas", 9), wrap="word")
+        self.config_box.pack(fill="both", expand=True, pady=(3, 0))
+        right = ttk.Frame(detail, width=280)
+        right.pack(side="right", fill="y", padx=(10, 0))
+        ttk.Label(right, text="QR Code", font=("Tahoma", 10, "bold")).pack()
+        self.qr_label = ttk.Label(right, text="یک کانفیگ را انتخاب کنید", anchor="center")
+        self.qr_label.pack(fill="both", expand=True, pady=4)
+        ttk.Label(self, text="تست Download و Upload کاملاً انتخابی است. بعد از پایان تست Upload، جدول و TOP10 بر اساس سرعت Upload مرتب می‌شوند. روی TOP10 یا یک ردیف کلیک کنید تا لینک و QR نمایش داده شود.",
                   padding=8).pack(fill="x")
 
     def log(self, text):
@@ -218,6 +246,9 @@ class App(tk.Tk):
         self.progress["value"] = 0
         self.logbox.delete("1.0", "end")
         self.topbox.delete("1.0", "end")
+        self.config_box.delete("1.0", "end")
+        self.qr_label.config(text="یک کانفیگ را انتخاب کنید", image="")
+        self.qr_image = None
         self.tree.delete(*self.tree.get_children())
         self.stop_event.clear()
         threading.Thread(target=self.worker, args=(urls,), daemon=True).start()
@@ -288,8 +319,11 @@ class App(tk.Tk):
             active = [r for r in self.rows if r.active]
             self.log(f"Latency واقعی تمام شد: {len(active)}/{len(self.rows)} سالم")
 
-            # Stage 2: actual bandwidth through the same config
-            for direction in ("download", "upload"):
+            # Stage 2: optional real bandwidth tests.
+            selected = []
+            if self.do_download.get(): selected.append("download")
+            if self.do_upload.get(): selected.append("upload")
+            for direction in selected:
                 self.log(f"شروع تست واقعی {direction.upper()} برای {len(active)} سرور فعال...")
                 with ThreadPoolExecutor(max_workers=core.MAX_WORKERS) as ex:
                     futs = {ex.submit(transfer_test, r, direction): r for r in active}
@@ -306,14 +340,25 @@ class App(tk.Tk):
                         self.events.put(("summary", f"{direction.upper()}: {done}/{len(active)}"))
                 if self.stop_event.is_set(): break
 
-            tops = sorted([r for r in active if r.upload > 0],
-                          key=lambda r: r.upload, reverse=True)[:10]
-            top_lines = ["🏆 TOP 10 — بهترین Upload واقعی", ""]
-            for n, r in enumerate(tops, 1):
-                top_lines.append(f"{n:2}. {r.upload:7.2f} Mbps | {r.host}:{r.port} | {r.name}")
-            Path(APP_DIR / "TOP10_UPLOAD.txt").write_text("\n".join(top_lines), encoding="utf-8")
-            self.events.put(("top", "\n".join(top_lines)))
-            self.log("TOP10_UPLOAD.txt ساخته شد.")
+            # Final ordering: Upload descending when Upload was selected.
+            if self.do_upload.get():
+                self.events.put(("sort_upload", None))
+                tops = sorted([r for r in active if r.upload > 0],
+                              key=lambda r: r.upload, reverse=True)[:10]
+                self.top_rows = tops
+                lines = ["TOP 10 Upload واقعی", ""]
+                for n, r in enumerate(tops, 1):
+                    lines.append(f"{n:02d}. {r.upload:.2f} Mbps | {r.host}:{r.port}")
+                    lines.append(f"    {r.name}")
+                    lines.append(f"    {r.raw}")
+                    lines.append("")
+                Path(APP_DIR / "TOP10_UPLOAD.txt").write_text("\n".join(lines), encoding="utf-8")
+                self.events.put(("top", tops))
+                self.log(f"TOP10_UPLOAD.txt ساخته شد: {len(tops)} کانفیگ")
+            else:
+                self.top_rows = []
+                self.events.put(("top", []))
+                self.log("تست Upload انتخاب نشده؛ TOP10 Upload ساخته نشد.")
             self.log("تست کامل به پایان رسید.")
         except Exception:
             self.log("خطا:\n" + __import__("traceback").format_exc())
@@ -337,8 +382,9 @@ class App(tk.Tk):
                 elif typ == "summary":
                     self.status.config(text=data)
                 elif typ == "top":
-                    self.topbox.delete("1.0", "end")
-                    self.topbox.insert("end", data)
+                    self.show_top(data)
+                elif typ == "sort_upload":
+                    self.sort_tree_upload()
                 elif typ == "done":
                     self.start_btn.config(state="normal")
                     self.stop_btn.config(state="disabled")
@@ -349,6 +395,63 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         self.after(100, self.drain)
+
+    def sort_tree_upload(self):
+        rows = sorted(self.rows, key=lambda r: r.upload, reverse=True)
+        for pos, r in enumerate(rows):
+            iid = str(r.index)
+            if self.tree.exists(iid): self.tree.move(iid, "", pos)
+
+    def show_top(self, rows):
+        self.topbox.delete("1.0", "end")
+        self.top_rows = rows or []
+        if not self.top_rows:
+            self.topbox.insert("end", "برای ساخت TOP10، گزینه «تست Upload» را تیک بزنید.\n")
+            return
+        for n, r in enumerate(self.top_rows, 1):
+            start = self.topbox.index("end-1c")
+            self.topbox.insert("end", f"{n:02d}. {r.upload:.2f} Mbps | {r.host}:{r.port} | {r.name}\n")
+            end = self.topbox.index("end-1c")
+            tag = f"top{n}"
+            self.topbox.tag_add(tag, start, end)
+            self.topbox.tag_config(tag, underline=True)
+
+    def top_click(self, event):
+        idxs = self.topbox.tag_names(f"@{event.x},{event.y}")
+        for tag in idxs:
+            if tag.startswith("top") and tag[3:].isdigit():
+                i = int(tag[3:]) - 1
+                if 0 <= i < len(self.top_rows):
+                    self.select_row(self.top_rows[i])
+                return "break"
+
+    def tree_selected(self, event=None):
+        sel = self.tree.selection()
+        if not sel: return
+        try:
+            idx = int(sel[0])
+            row = next(r for r in self.rows if r.index == idx)
+            self.select_row(row)
+        except Exception:
+            pass
+
+    def select_row(self, row):
+        self.config_box.delete("1.0", "end")
+        self.config_box.insert("end", row.raw)
+        self.config_box.tag_add("sel", "1.0", "end")
+        if qrcode is None or ImageTk is None:
+            self.qr_label.config(text="برای QR، qrcode و Pillow نصب کنید", image="")
+            return
+        try:
+            qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=7, border=3)
+            qr.add_data(row.raw)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+            img.thumbnail((260, 260))
+            self.qr_image = ImageTk.PhotoImage(img)
+            self.qr_label.config(image=self.qr_image, text="")
+        except Exception as e:
+            self.qr_label.config(text=f"QR ساخته نشد: {e}", image="")
 
 if __name__ == "__main__":
     App().mainloop()
